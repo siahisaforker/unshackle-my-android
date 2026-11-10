@@ -8,7 +8,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.request
+import zipfile
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -50,11 +53,130 @@ class Status:
     secondary: tuple[str, ...] = ()
 
 
+def adb_cache():
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home()))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library/Caches"
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return base / "unshackle-my-android" / "platform-tools"
+
+
+def download_adb():
+    platform = {"win32": "windows", "darwin": "darwin", "linux": "linux"}.get(sys.platform)
+    if not platform:
+        raise Error("unsupported platform")
+
+    folder = adb_cache()
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    url = f"https://dl.google.com/android/repository/platform-tools-latest-{platform}.zip"
+    print("downloading platform-tools from google...")
+
+    with tempfile.TemporaryDirectory(dir=folder.parent) as temporary:
+        temp = Path(temporary)
+        archive_path = temp / "platform-tools.zip"
+        with urllib.request.urlopen(url, timeout=40) as response, archive_path.open("wb") as output:
+            size = 0
+            while block := response.read(1024 * 1024):
+                size += len(block)
+                if size > 150 * 1024 * 1024:
+                    raise Error("download is too large")
+                output.write(block)
+
+        with zipfile.ZipFile(archive_path) as archive:
+            files = archive.infolist()
+            if not files or sum(f.file_size for f in files) > 300 * 1024 * 1024:
+                raise Error("invalid platform-tools archive")
+            for info in files:
+                parts = Path(info.filename).parts
+                if not parts or parts[0] != "platform-tools" or any(x in ("..", "") for x in parts):
+                    raise Error("invalid platform-tools archive")
+                if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise Error("invalid platform-tools archive")
+            archive.extractall(temp)
+
+        executable = temp / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb")
+        if not executable.is_file():
+            raise Error("adb missing from archive")
+        if os.name != "nt":
+            executable.chmod(executable.stat().st_mode | 0o111)
+        subprocess.run([str(executable), "version"], capture_output=True, check=True, timeout=20)
+        if folder.exists():
+            shutil.rmtree(folder)
+        (temp / "platform-tools").rename(folder)
+
+    return str(folder / executable.name)
+
+
+def system_adb():
+    if sys.platform == "win32":
+        command = ["winget", "install", "-e", "--id", "Google.PlatformTools"]
+    elif sys.platform == "darwin":
+        command = ["brew", "install", "--cask", "android-platform-tools"]
+    elif sys.platform == "linux":
+        managers = (
+            ("apt-get", ["apt-get", "install", "adb"]),
+            ("dnf", ["dnf", "install", "android-tools"]),
+            ("pacman", ["pacman", "-S", "android-tools"]),
+            ("zypper", ["zypper", "install", "android-tools"]),
+            ("apk", ["apk", "add", "android-tools"]),
+        )
+        command = next((args for name, args in managers if shutil.which(name)), None)
+        if command and os.geteuid() != 0:
+            if not shutil.which("sudo"):
+                raise Error("sudo not found")
+            command = ["sudo", *command]
+    else:
+        command = None
+
+    if not command or not shutil.which(command[0]):
+        raise Error("no supported package manager found; use local installation")
+    print("command:", " ".join(command))
+    if input("run this command? [y/N] ").strip().lower() not in ("y", "yes"):
+        raise Error("cancelled")
+    if subprocess.run(command, check=False).returncode:
+        raise Error("install failed")
+    found = shutil.which("adb")
+    if not found and os.name == "nt":
+        links = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Microsoft/WinGet/Links/adb.exe"
+        if links.is_file():
+            found = str(links)
+    if not found:
+        raise Error("adb installed but not on PATH; restart your terminal")
+    return found
+
+
+def find_adb(executable):
+    found = shutil.which(executable)
+    if found:
+        return found
+    if executable != "adb":
+        raise Error(f"{executable} not found")
+
+    cached = adb_cache() / ("adb.exe" if os.name == "nt" else "adb")
+    if cached.is_file() and (os.name == "nt" or os.access(cached, os.X_OK)):
+        return str(cached)
+    if not sys.stdin.isatty():
+        raise Error("adb not found; run this in a terminal to install it")
+
+    print("adb is not present. do you want to install it?")
+    if input("[y/N] ").strip().lower() not in ("y", "yes"):
+        raise Error("adb is required")
+    print("1. local (google platform-tools)")
+    print("2. system-wide (package manager)")
+    option = input("[1/2] ").strip()
+    if option not in ("1", "2"):
+        raise Error("cancelled")
+    try:
+        return download_adb() if option == "1" else system_adb()
+    except (OSError, zipfile.BadZipFile, subprocess.SubprocessError) as exc:
+        raise Error(f"adb install failed: {exc}") from exc
+
+
 class ADB:
     def __init__(self, serial=None, executable="adb"):
-        self.executable = shutil.which(executable)
-        if not self.executable:
-            raise Error("adb not found")
+        self.executable = find_adb(executable)
         self.serial = serial or self.find_device()
 
     def call(self, *args, timeout=30):
@@ -306,6 +428,18 @@ def run(adb, options):
 
 
 def main(args=None):
+    args = list(sys.argv[1:] if args is None else args)
+    index = 0
+    while index < len(args):
+        if args[index] in ("--serial", "--adb") and index + 1 < len(args):
+            index += 2
+        elif args[index].startswith(("--serial=", "--adb=")):
+            index += 1
+        else:
+            break
+    if index == len(args) or args[index] not in ("run", "scan", "status", "-h", "--help"):
+        args.insert(index, "run")
+
     parser = argparse.ArgumentParser(description="compile android apps with ART")
     parser.add_argument("--serial", default=os.environ.get("ANDROID_SERIAL"))
     parser.add_argument("--adb", default="adb")
