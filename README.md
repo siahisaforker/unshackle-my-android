@@ -7,7 +7,7 @@ no root needed on devices that support the package compile command. if adb is mi
 
 ## usage
 
-install python 3.11+, turn on usb debugging, and plug in your phone. if adb isn't installed, the script can get it for you.
+install python 3.11+, turn on usb debugging, and plug in your phone. if adb isn't installed, the script can get it for you. if it says usb debugging isn't authorized, unlock the phone and tap allow on the popup.
 
 ```bash
 python3 unshackle.py

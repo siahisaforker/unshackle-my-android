@@ -192,14 +192,28 @@ class ADB:
         return result.stdout.strip() or (result.stderr.strip() if allow_error else "")
 
     def find_device(self):
-        devices = []
-        for line in self.call("devices", "-l").splitlines()[1:]:
-            parts = line.split()
-            if len(parts) > 1 and parts[1] == "device":
-                devices.append(parts[0])
-        if len(devices) != 1:
-            raise Error("no device connected" if not devices else "select a device with --serial")
-        return devices[0]
+        for attempt in range(31):
+            devices = {}
+            for line in self.call("devices", "-l").splitlines()[1:]:
+                parts = line.split()
+                if len(parts) > 1:
+                    devices[parts[0]] = parts[1]
+
+            ready = [serial for serial, state in devices.items() if state == "device"]
+            if len(ready) == 1:
+                return ready[0]
+            if len(ready) > 1:
+                raise Error("more than one device connected. use --serial")
+            if not devices:
+                raise Error("no device connected. check your usb cable and enable usb debugging")
+            if "unauthorized" in devices.values():
+                if attempt == 0 and sys.stdin.isatty():
+                    print("usb debugging isn't authorized. unlock your phone and tap allow")
+                if sys.stdin.isatty() and attempt < 30:
+                    time.sleep(1)
+                    continue
+                raise Error("usb debugging isn't authorized. unlock your phone and tap allow, then retry")
+            raise Error("device is offline. reconnect usb and try again")
 
     def shell(self, *args, timeout=30, allow_error=False):
         return self.call("-s", self.serial, "shell", *args, timeout=timeout, allow_error=allow_error)
