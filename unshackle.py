@@ -252,6 +252,9 @@ class ADB:
     def status(self):
         return parse_status(self.shell("dumpsys", "package", timeout=90))
 
+    def reboot(self):
+        self.call("-s", self.serial, "reboot", timeout=30)
+
 
 def number(text, pattern):
     match = re.search(pattern, text, re.M)
@@ -430,6 +433,17 @@ def run(adb, options):
         print(f"can't check status: {exc}", file=sys.stderr)
     save_json(path, data)
     print(f"done: {passed} ok, {skipped} skipped, {failed} failed")
+    if not failed and passed and not options.no_reboot:
+        print("rebooting phone...")
+        try:
+            adb.reboot()
+            data["reboot"] = "requested"
+        except Error as exc:
+            data["reboot"] = f"failed: {exc}"
+            save_json(path, data)
+            print(f"reboot failed: {exc}", file=sys.stderr)
+            return 1
+        save_json(path, data)
     return int(failed > 0)
 
 
@@ -461,6 +475,7 @@ def main(args=None):
     cmd.add_argument("--dry-run", action="store_true")
     cmd.add_argument("--resume", action="store_true")
     cmd.add_argument("--force", action="store_true")
+    cmd.add_argument("--no-reboot", action="store_true")
     cmd.add_argument("--timeout", type=int, default=300)
     cmd.add_argument("--minimum-battery", type=int, default=30)
     cmd.add_argument("--minimum-free", type=float, default=4)

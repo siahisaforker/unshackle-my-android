@@ -13,7 +13,7 @@ install python 3.11+, turn on usb debugging, and plug in your phone. if adb isn'
 python3 unshackle.py
 ```
 
-that's it. it'll check for adb, ask to install it if it's missing, find the phone, then compile all installed packages using `speed`. it'll check the battery, storage and temperature first, show progress, and check the compiled code when it finishes.
+that's it. it'll check for adb, ask to install it if it's missing, find the phone, then compile all installed packages using `speed`. it'll check the battery, storage and temperature first, show progress, and check the compiled code when it finishes. if everything compiles successfully, it'll reboot the phone afterward. if any packages fail or the run gets interrupted, it won't reboot.
 
 if you just want to check things without compiling anything:
 
@@ -23,7 +23,7 @@ python3 unshackle.py status
 python3 unshackle.py --dry-run
 ```
 
-`scan` gets basic device info, `status` shows what ART has compiled, and `--dry-run` lists the apps without changing anything.
+`scan` gets basic device info, `status` shows what ART has compiled, and `--dry-run` lists the apps without changing anything. add `--no-reboot` if you don't want the phone to restart after compiling.
 
 it compiles all installed packages by default. use `--scope user` if you only want downloaded apps. `--scope system` does the opposite. you can also switch to `speed-profile` or `verify` with `--mode`.
 
