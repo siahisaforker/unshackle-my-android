@@ -179,7 +179,7 @@ class ADB:
         self.executable = find_adb(executable)
         self.serial = serial or self.find_device()
 
-    def call(self, *args, timeout=30):
+    def call(self, *args, timeout=30, allow_error=False):
         try:
             result = subprocess.run(
                 [self.executable, *args], capture_output=True, text=True,
@@ -187,9 +187,9 @@ class ADB:
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise Error(str(exc)) from exc
-        if result.returncode:
+        if result.returncode and not allow_error:
             raise Error(result.stderr.strip() or result.stdout.strip() or "adb failed")
-        return result.stdout.strip()
+        return result.stdout.strip() or (result.stderr.strip() if allow_error else "")
 
     def find_device(self):
         devices = []
@@ -201,8 +201,8 @@ class ADB:
             raise Error("no device connected" if not devices else "select a device with --serial")
         return devices[0]
 
-    def shell(self, *args, timeout=30):
-        return self.call("-s", self.serial, "shell", *args, timeout=timeout)
+    def shell(self, *args, timeout=30, allow_error=False):
+        return self.call("-s", self.serial, "shell", *args, timeout=timeout, allow_error=allow_error)
 
     def device(self):
         battery = self.shell("dumpsys", "battery")
@@ -230,8 +230,14 @@ class ADB:
         return parse_paths(self.shell("pm", "list", "packages", "-f"))
 
     def compile_options(self):
-        help_text = self.shell("cmd", "package", "help")
-        return "--full" in help_text, "PRIORITY_BACKGROUND" in help_text
+        help_text = self.shell("cmd", "package", "help", allow_error=True)
+        lines = help_text.splitlines()
+        start = next((i for i, line in enumerate(lines) if re.match(r"^  compile(?:\s|\[)", line)), None)
+        if start is None:
+            return False, False
+        end = next((i for i in range(start + 1, len(lines)) if re.match(r"^  [a-z][\w-]*(?:\s|$)", lines[i])), len(lines))
+        section = "\n".join(lines[start:end])
+        return "--full" in section, "PRIORITY_BACKGROUND" in section
 
     def compile(self, package, mode, full, background, force, timeout):
         args = ["cmd", "package", "compile", "-m", mode.value]
